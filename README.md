@@ -34,8 +34,8 @@ Column headers are matched case-insensitively and ignore spaces/underscores (`po
 
 ### Search by username
 ```bash
-curl "http://localhost:3000/api/policies/search?username=Lucy"
-curl "http://localhost:3000/api/policies/search?email=lucy@example.com"
+curl "http://localhost:3000/api/policies/search?username=test_name"
+curl "http://localhost:3000/api/policies/search?email=test@test.com"
 ```
 Returns the user plus their policies with category, carrier, agent and account populated.
 
