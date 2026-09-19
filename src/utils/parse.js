@@ -29,4 +29,11 @@ function toNumber(v) {
 
 const str = (v) => (v === undefined || v === null ? '' : String(v).trim());
 
-module.exports = { toDate, toNumber, str };
+function getPagination(query) {
+  const page = Math.max(1, parseInt(query.page, 10) || 1);
+  const raw = parseInt(query.limit, 10) || 10;
+  const limit = Math.min(100, Math.max(10, raw));
+  return { page, limit, offset: (page - 1) * limit };
+}
+
+module.exports = { toDate, toNumber, str, getPagination };

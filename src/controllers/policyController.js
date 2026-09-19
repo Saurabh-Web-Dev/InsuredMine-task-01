@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { User, Policy } = require('../models');
+const { getPagination, buildMeta } = require('../utils/pagination');
 
 const POPULATE = [
   { path: 'policyCategoryId', select: 'categoryName' },
@@ -8,34 +9,52 @@ const POPULATE = [
   { path: 'accountId', select: 'accountName' },
 ];
 
-// GET /api/policies/search?username=Alice   (also accepts ?email=)
+// GET /api/policies/search?username=Alice&page=1&limit=10   (also accepts ?email=)
+// Paginates over matching USERS. 10 <= limit <= 100.
 async function searchByUsername(req, res, next) {
   try {
     const { username, email } = req.query;
     if (!username && !email) {
       return res.status(400).json({ success: false, message: 'Query param "username" (or "email") is required' });
     }
+
     const filter = {};
     if (username) filter.firstName = { $regex: `^${escapeRegex(username)}$`, $options: 'i' };
     if (email) filter.email = String(email).toLowerCase();
 
-    const users = await User.find(filter).lean();
-    if (!users.length) return res.status(404).json({ success: false, message: 'User not found' });
+    const { page, limit, skip } = getPagination(req.query);
 
-    const results = await Promise.all(
+    const [total, users] = await Promise.all([
+      User.countDocuments(filter),
+      // Sort is required: without it skip/limit have no stable order and rows
+      // can repeat or disappear between pages.
+      User.find(filter).sort({ _id: 1 }).skip(skip).limit(limit).lean(),
+    ]);
+
+    if (!total) return res.status(404).json({ success: false, message: 'User not found' });
+
+    const data = await Promise.all(
       users.map(async (u) => ({
         user: u,
         policies: await Policy.find({ userId: u._id }).populate(POPULATE).lean(),
       }))
     );
-    res.json({ success: true, count: results.length, data: results });
+
+    res.json({
+      success: true,
+      count: data.length,
+      data,
+      pagination: buildMeta(page, limit, total),
+    });
   } catch (err) {
     next(err);
   }
 }
 
-// GET /api/policies/aggregate          -> all users
-// GET /api/policies/aggregate/:userId  -> one user
+// GET /api/policies/aggregate?page=1&limit=10          -> all users
+// GET /api/policies/aggregate/:userId?page=1&limit=10  -> one user
+// Paginates inside the pipeline via $facet, so Mongo does not materialise every
+// user's group just to throw most of it away.
 async function aggregateByUser(req, res, next) {
   try {
     const match = {};
@@ -46,7 +65,9 @@ async function aggregateByUser(req, res, next) {
       match.userId = new mongoose.Types.ObjectId(req.params.userId);
     }
 
-    const data = await Policy.aggregate([
+    const { page, limit, skip } = getPagination(req.query);
+
+    const [result] = await Policy.aggregate([
       { $match: match },
       { $lookup: { from: 'policycategories', localField: 'policyCategoryId', foreignField: '_id', as: 'category' } },
       { $lookup: { from: 'policycarriers', localField: 'companyId', foreignField: '_id', as: 'carrier' } },
@@ -82,10 +103,26 @@ async function aggregateByUser(req, res, next) {
           policies: 1,
         },
       },
-      { $sort: { totalPolicies: -1, firstName: 1 } },
+      // userId is the tie-breaker so equal (totalPolicies, firstName) pairs keep
+      // a stable order across pages.
+      { $sort: { totalPolicies: -1, firstName: 1, userId: 1 } },
+      {
+        $facet: {
+          data: [{ $skip: skip }, { $limit: limit }],
+          meta: [{ $count: 'total' }],
+        },
+      },
     ]);
 
-    res.json({ success: true, count: data.length, data });
+    const data = result?.data ?? [];
+    const total = result?.meta?.[0]?.total ?? 0;
+
+    res.json({
+      success: true,
+      count: data.length,
+      data,
+      pagination: buildMeta(page, limit, total),
+    });
   } catch (err) {
     next(err);
   }
